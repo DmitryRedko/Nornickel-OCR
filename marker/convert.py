@@ -148,7 +148,7 @@ def convert_single_pdf(
 
     # Extract images and figures
     if settings.EXTRACT_IMAGES:
-        extract_images(doc, pages)
+        extract_images(doc, pages, min_image_width, min_image_height)
 
     # Split out headers
     split_heading_blocks(pages)
