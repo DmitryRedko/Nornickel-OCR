@@ -1,9 +1,11 @@
-from collections import defaultdict, Counter
+from collections import Counter
 from typing import List
 
+import supervision as sv
 from surya.layout import batch_layout_detection
+from surya.schema import LayoutBox, LayoutResult
+from ultralytics import YOLO
 
-from marker.pdf.images import render_image
 from marker.schema.bbox import rescale_bbox
 from marker.schema.block import bbox_from_lines
 from marker.schema.page import Page
@@ -20,11 +22,60 @@ def get_batch_size():
 
 def surya_layout(images: list, pages: List[Page], layout_model, batch_multiplier=1):
     text_detection_results = [p.text_lines for p in pages]
-
     processor = layout_model.processor
-    layout_results = batch_layout_detection(images, layout_model, processor, detection_results=text_detection_results, batch_size=int(get_batch_size() * batch_multiplier))
-    for page, layout_result in zip(pages, layout_results):
-        page.layout = layout_result
+    layout_results = batch_layout_detection(
+        images,
+        layout_model,
+        processor,
+        detection_results=text_detection_results,
+        batch_size=int(get_batch_size() * batch_multiplier),
+    )
+
+    assert len(pages) == len(
+        layout_results
+    ), "Mismatched number of pages and layout results"
+
+    yolo_model = YOLO("yolov11x_best.pt")
+    yolo_detections = []
+
+    for image in images:
+        result = yolo_model(image)[0]
+        detections = sv.Detections.from_ultralytics(result)
+        yolo_detections.append(detections)
+
+    for page, layout_result, yolo_detection in zip(
+        pages, layout_results, yolo_detections
+    ):
+        updated_bboxes = []
+        for layout_box in layout_result.bboxes:
+            if layout_box.label == "Figure":
+                for yolo_box, yolo_label in zip(
+                    yolo_detection.xyxy, yolo_detection.data["class_name"]
+                ):
+                    if yolo_label == "Picture":
+                        new_layout_box = LayoutBox(
+                            polygon=[
+                                [yolo_box[0], yolo_box[1]],
+                                [yolo_box[2], yolo_box[1]],
+                                [yolo_box[2], yolo_box[3]],
+                                [yolo_box[0], yolo_box[3]],
+                            ],
+                            confidence=layout_box.confidence,
+                            label=layout_box.label,
+                            bbox=yolo_box,
+                        )
+                        updated_bboxes.append(new_layout_box)
+                        break
+            else:
+                updated_bboxes.append(layout_box)
+
+        layout_result_updated = LayoutResult(
+            bboxes=updated_bboxes,
+            segmentation_map=layout_result.segmentation_map,
+            heatmaps=None,
+            image_bbox=layout_result.image_bbox,
+        )
+        page.layout = layout_result_updated
 
 
 def annotate_block_types(pages: List[Page]):
@@ -33,7 +84,9 @@ def annotate_block_types(pages: List[Page]):
         for i, block in enumerate(page.blocks):
             for j, layout_block in enumerate(page.layout.bboxes):
                 layout_bbox = layout_block.bbox
-                layout_bbox = rescale_bbox(page.layout.image_bbox, page.bbox, layout_bbox)
+                layout_bbox = rescale_bbox(
+                    page.layout.image_bbox, page.bbox, layout_bbox
+                )
                 intersection_pct = block.intersection_pct(layout_bbox)
                 if i not in max_intersections:
                     max_intersections[i] = (intersection_pct, j)
@@ -92,14 +145,18 @@ def annotate_block_types(pages: List[Page]):
         for i in range(len(page.blocks)):
             if i not in max_intersections or max_intersections[i][0] == 0:
                 if curr_layout_block is not None:
-                    new_blocks.append(generate_block(curr_layout_block, curr_block_labels))
+                    new_blocks.append(
+                        generate_block(curr_layout_block, curr_block_labels)
+                    )
                 curr_layout_block = None
                 curr_layout_idx = None
                 curr_block_labels = []
                 new_blocks.append(page.blocks[i])
             elif max_intersections[i][1] != curr_layout_idx:
                 if curr_layout_block is not None:
-                    new_blocks.append(generate_block(curr_layout_block, curr_block_labels))
+                    new_blocks.append(
+                        generate_block(curr_layout_block, curr_block_labels)
+                    )
                 curr_layout_block = page.blocks[i].copy()
                 curr_layout_idx = max_intersections[i][1]
                 curr_block_labels = [page.blocks[i].block_type]
