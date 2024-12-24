@@ -56,9 +56,11 @@ def convert_single_pdf(
     min_image_width: float = None,
     min_image_height: float = None,
     tables_path: str = None,
+    image_flag: str = None,
+    output: str = None
 ) -> Tuple[str, Dict[str, Image.Image], Dict]:
     ocr_all_pages = ocr_all_pages or settings.OCR_ALL_PAGES
-
+    
     if metadata:
         langs = metadata.get("languages", langs)
 
@@ -128,7 +130,7 @@ def convert_single_pdf(
         print(f"Could not extract any text blocks for {fname}")
         return "", {}, out_meta
 
-    surya_layout(lowres_images, pages, layout_model, batch_multiplier=batch_multiplier)
+    surya_layout(lowres_images, pages, layout_model, batch_multiplier=batch_multiplier, image_flag = image_flag, output = output)
 
     # Find headers and footers
     bad_span_ids = filter_header_footer(pages)
@@ -178,11 +180,7 @@ def convert_single_pdf(
     # Extract images and figures
     if settings.EXTRACT_IMAGES:
         print("Extract images and figures")
-        # ic(doc)
-        # ic(pages)
-        # ic(min_image_width)
-        # ic(min_image_height)
-        extract_images(doc, pages, min_image_width, min_image_height)
+        extract_images(doc, pages, image_flag, min_image_width, min_image_height)
 
     # Split out headers
     split_heading_blocks(pages)

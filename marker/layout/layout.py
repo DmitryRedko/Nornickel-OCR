@@ -6,6 +6,11 @@ from surya.layout import batch_layout_detection
 from surya.schema import LayoutBox, LayoutResult
 from ultralytics import YOLO
 
+import cv2
+import supervision as sv
+import numpy as np
+import os
+
 from marker.schema.bbox import rescale_bbox
 from marker.schema.block import bbox_from_lines
 from marker.schema.page import Page
@@ -19,63 +24,72 @@ def get_batch_size():
         return 6
     return 6
 
+def save_fullscreen_images(images, output):
+    output_dir = os.path.join(output, "fullscreen_images")
+    os.makedirs(output_dir, exist_ok=True)  # Создаёт папку, если её нет
 
-def surya_layout(images: list, pages: List[Page], layout_model, batch_multiplier=1):
-    text_detection_results = [p.text_lines for p in pages]
-    processor = layout_model.processor
-    layout_results = batch_layout_detection(
-        images,
-        layout_model,
-        processor,
-        detection_results=text_detection_results,
-        batch_size=int(get_batch_size() * batch_multiplier),
-    )
+    for i, image in enumerate(images):
+        output_path = os.path.join(output_dir, f"page_{i + 1}_fullscreen.png")
+        image.save(output_path)
+        print(f"Fullscreen image saved to: {output_path}")
 
-    assert len(pages) == len(
-        layout_results
-    ), "Mismatched number of pages and layout results"
-
+def annotate_yolo_images(images, output):
     yolo_model = YOLO("yolov11x_best.pt")
-    yolo_detections = []
+    output_dir = os.path.join(output, "yolo_images")
+    os.makedirs(output_dir, exist_ok=True)  # Создаёт папку, если её нет
 
-    for image in images:
-        result = yolo_model(image)[0]
-        detections = sv.Detections.from_ultralytics(result)
-        yolo_detections.append(detections)
+    for idx, image in enumerate(images):
+        # Convert image to OpenCV format if needed
+        if isinstance(image, str):
+            image_cv = cv2.imread(image)  # Если это путь, загружаем напрямую
+        else:
+            image_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)  # Convert PIL.Image to OpenCV image
 
-    for page, layout_result, yolo_detection in zip(
-        pages, layout_results, yolo_detections
-    ):
-        updated_bboxes = []
-        for layout_box in layout_result.bboxes:
-            if layout_box.label == "Figure":
-                for yolo_box, yolo_label in zip(
-                    yolo_detection.xyxy, yolo_detection.data["class_name"]
-                ):
-                    if yolo_label == "Picture":
-                        new_layout_box = LayoutBox(
-                            polygon=[
-                                [yolo_box[0], yolo_box[1]],
-                                [yolo_box[2], yolo_box[1]],
-                                [yolo_box[2], yolo_box[3]],
-                                [yolo_box[0], yolo_box[3]],
-                            ],
-                            confidence=layout_box.confidence,
-                            label=layout_box.label,
-                            bbox=yolo_box,
-                        )
-                        updated_bboxes.append(new_layout_box)
-                        break
-            else:
-                updated_bboxes.append(layout_box)
+        results = yolo_model(image_cv, conf=0.2, iou=0.8)[0]
+        detections = sv.Detections.from_ultralytics(results)
 
-        layout_result_updated = LayoutResult(
-            bboxes=updated_bboxes,
-            segmentation_map=layout_result.segmentation_map,
-            heatmaps=None,
-            image_bbox=layout_result.image_bbox,
-        )
-        page.layout = layout_result_updated
+        class_colors = [
+            sv.Color(255, 0, 0),    # Red for "Caption"
+            sv.Color(0, 255, 0),    # Green for "Footnote"
+            sv.Color(0, 0, 255),    # Blue for "Formula"
+            sv.Color(255, 255, 0),  # Yellow for "List-item"
+            sv.Color(255, 0, 255),  # Magenta for "Page-footer"
+            sv.Color(0, 255, 255),  # Cyan for "Page-header"
+            sv.Color(128, 0, 128),  # Purple for "Picture"
+            sv.Color(128, 128, 0),  # Olive for "Section-header"
+            sv.Color(128, 128, 128),# Gray for "Table"
+            sv.Color(0, 128, 128),  # Teal for "Text"
+            sv.Color(128, 0, 0)     # Maroon for "Title"
+        ]
+
+        box_annotator = sv.BoxAnnotator(color=sv.ColorPalette(class_colors), thickness=3)
+        annotated_image = box_annotator.annotate(scene=image_cv, detections=detections)
+
+        label_annotator = sv.LabelAnnotator(color=sv.ColorPalette(class_colors), text_color=sv.Color(255, 255, 255))
+        annotated_image = label_annotator.annotate(scene=annotated_image, detections=detections)
+
+        output_path = os.path.join(output_dir, f"annotated_image_{idx + 1}.png")
+        cv2.imwrite(output_path, annotated_image)
+        print(f"Annotated image saved to: {output_path}")
+        
+def surya_layout(images: list, pages: List[Page], layout_model, batch_multiplier=1, image_flag=0, output = './'):
+    text_detection_results = [p.text_lines for p in pages]
+
+    processor = layout_model.processor
+    layout_results = batch_layout_detection(images, layout_model, processor, detection_results=text_detection_results, batch_size=int(get_batch_size() * batch_multiplier))
+    for page, layout_result in zip(pages, layout_results):
+        page.layout = layout_result
+
+    if image_flag == 1:
+        # Fullscreen image saving logic
+        save_fullscreen_images(images, output)
+    elif image_flag == 2:
+        # YOLO model-based image annotation and saving
+        annotate_yolo_images(images, output)
+    elif image_flag == 3:
+        # Fullscreen and YOLO image saving logic
+        save_fullscreen_images(images, output)
+        annotate_yolo_images(images, output)   
 
 
 def annotate_block_types(pages: List[Page]):
