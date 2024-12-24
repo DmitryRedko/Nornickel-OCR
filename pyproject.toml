@@ -13,7 +13,17 @@ ipython = "^8.29.0"
 langchain-community = "^0.3.4"
 langchain-experimental = "^0.3.2"
 langchain-huggingface = "^0.1.1"
+spacy = "^3.8.2"
+torch = {version = "^2.5.1+cu124", source = "pytorch-gpu"}
+torchvision = {version = "^0.20.1+cu124", source = "pytorch-gpu"}
+torchaudio = {version = "^2.5.1+cu124", source = "pytorch-gpu"}
+transformers = {extras = ["torch"], version = "^4.47.0"}
 
+
+[[tool.poetry.source]]
+name = "pytorch-gpu"
+url = "https://download.pytorch.org/whl/cu124"
+priority = "explicit"
 
 [build-system]
 requires = ["poetry-core"]
